@@ -1,45 +1,43 @@
 import streamlit as st
 import requests
-import random
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-import os
 import json
+import io
+from gtts import gTTS
+from pathlib import Path
 
-st.set_page_config(page_title="SmartCrop Advisory", layout="wide")
+st.set_page_config(page_title="SmartCrop Advisory App", layout="wide")
 
-DATA_FILE = "smartcrop_data.csv"
+# ---------- Helpers ----------
+def get_api_key():
+    return st.secrets.get("general", {}).get("OPENWEATHERMAP_API_KEY", None)
 
-# ---------- HELPERS ----------
 def get_current_weather(city):
+    api_key = get_api_key()
+    if not api_key:
+        return None
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
     try:
-        if "api_keys" in st.secrets and "openweather" in st.secrets["api_keys"]:
-            api_key = st.secrets["api_keys"]["openweather"]
-        else:
-            st.warning("⚠️ No OpenWeatherMap API key found in Streamlit secrets.")
-            return None
-
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
             return None
         d = r.json()
-        return {"temperature": d["main"]["temp"],
-                "humidity": d["main"]["humidity"],
-                "condition": d["weather"][0]["description"]}
-    except Exception as e:
-        st.error(f"Error fetching weather: {e}")
+        return {
+            "temperature": d["main"]["temp"],
+            "humidity": d["main"]["humidity"],
+            "condition": d["weather"][0]["description"],
+        }
+    except Exception:
         return None
 
 def get_forecast(city, days=3):
+    api_key = get_api_key()
+    if not api_key:
+        return None
+    url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={api_key}&units=metric"
     try:
-        if "api_keys" in st.secrets and "openweather" in st.secrets["api_keys"]:
-            api_key = st.secrets["api_keys"]["openweather"]
-        else:
-            return None
-
-        url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={api_key}&units=metric"
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
             return None
@@ -58,10 +56,12 @@ def get_forecast(city, days=3):
             temps["conds"].append(item["weather"][0]["description"])
         result = []
         for d, v in sorted(daily.items())[:days]:
-            avg_t = sum(v["temps"])/len(v["temps"])
-            avg_h = sum(v["hums"])/len(v["hums"])
+            avg_t = sum(v["temps"]) / len(v["temps"])
+            avg_h = sum(v["hums"]) / len(v["hums"])
             cond = max(set(v["conds"]), key=v["conds"].count)
-            result.append({"date": d, "avg_temp": round(avg_t,1), "avg_humidity": round(avg_h,1), "condition": cond})
+            result.append(
+                {"date": d, "avg_temp": round(avg_t, 1), "avg_humidity": round(avg_h, 1), "condition": cond}
+            )
         return result
     except Exception:
         return None
@@ -81,11 +81,11 @@ def crop_advisory(soil, weather, stage):
         t = weather.get("temperature")
         h = weather.get("humidity")
         if t is not None and t > 35:
-            advice_list.append("⚠️ High temperature: Irrigate crops frequently and use mulches.")
+            advice_list.append("High temperature: Irrigate frequently and use mulches.")
         if t is not None and t < 15:
-            advice_list.append("⚠️ Low temperature: Use crop covers to retain heat.")
+            advice_list.append("Low temperature: Use crop covers to retain heat.")
         if h is not None and h > 70:
-            advice_list.append("⚠️ High humidity: Watch for fungal diseases; consider preventive fungicide if recommended.")
+            advice_list.append("High humidity: Watch for fungal diseases.")
 
     if stage == "Sowing":
         advice_list.append("Use nitrogen-rich fertilizers for better germination.")
@@ -98,60 +98,57 @@ def crop_advisory(soil, weather, stage):
 
     return advice_list
 
-def pest_disease_alerts(forecast):
-    alerts = []
-    if not forecast:
-        return alerts
-    for day in forecast:
-        if day["avg_humidity"] > 75 and day["avg_temp"]>20:
-            alerts.append(f"{day['date']}: High risk of fungal diseases (humidity {day['avg_humidity']}%).")
-        if day["avg_temp"] > 38:
-            alerts.append(f"{day['date']}: Heat stress risk (temp {day['avg_temp']}°C).")
-    return alerts
-
 def simple_yield_estimate(soil, forecast, stage):
     base = 0.6
     if soil == "Alluvial": base += 0.15
     if soil == "Black": base += 0.1
     if stage == "Vegetative": base += 0.05
     if stage == "Flowering": base += 0.02
-    if forecast and len(forecast)>0:
+    if forecast and len(forecast) > 0:
         t = forecast[0]["avg_temp"]
         h = forecast[0]["avg_humidity"]
-        if t>35:
+        if t > 35:
             base -= 0.08
-        if h>80:
+        if h > 80:
             base -= 0.06
     base = max(0.2, min(0.98, base))
-    percent = int(base*100)
+    percent = int(base * 100)
     return {"factor": base, "text": f"Estimated relative yield: {percent}% (rule-based approx)."}
 
-def save_entry(data):
-    df_row = pd.DataFrame([data])
-    if not os.path.exists(DATA_FILE):
-        df_row.to_csv(DATA_FILE, index=False)
-    else:
-        df_row.to_csv(DATA_FILE, mode='a', header=False, index=False)
+def text_to_speech(text, lang="en"):
+    tts = gTTS(text=text, lang=lang)
+    mp3_fp = io.BytesIO()
+    tts.write_to_fp(mp3_fp)
+    mp3_fp.seek(0)
+    return mp3_fp.read()
+
+def get_dummy_mandi_prices(state="Karnataka"):
+    data = [
+        {"commodity": "Wheat", "unit": "kg", "price": 2200, "market": "Bengaluru APMC"},
+        {"commodity": "Rice", "unit": "kg", "price": 1800, "market": "Mandya APMC"},
+        {"commodity": "Maize", "unit": "kg", "price": 1500, "market": "Bengaluru APMC"},
+        {"commodity": "Cotton", "unit": "quintal", "price": 5200, "market": "Gulbarga APMC"},
+    ]
+    return pd.DataFrame(data)
 
 # ---------- UI ----------
 st.title("🌱 SmartCrop Advisory App")
-st.subheader("For Small & Marginal Farmers (Enhanced)")
+st.subheader("For Small & Marginal Farmers")
+
+# Debug API Key
+API_KEY = get_api_key()
+if API_KEY:
+    st.success("✅ OpenWeatherMap API key loaded successfully.")
+else:
+    st.warning("⚠️ No OpenWeatherMap API key found in Streamlit Secrets. Please add it in App → Settings → Secrets.")
 
 with st.sidebar:
     st.header("Farmer Details")
     farmer_name = st.text_input("👨‍🌾 Farmer Name", value="")
-    location = st.text_input("📍 Location (City/Village)", value="")
+    location = st.text_input("📍 Location (City/Village)", value="Bengaluru")
     soil_type = st.selectbox("🌍 Soil Type", ["Alluvial", "Black", "Red", "Laterite", "Sandy", "Clay"])
     crop_stage = st.selectbox("🌾 Crop Stage", ["Sowing", "Vegetative", "Flowering", "Harvesting"])
-    save_local = st.checkbox("Save this advisory locally (CSV)", value=True)
-    st.markdown("---")
-    st.markdown("**Quick actions**")
-    if st.button("Show saved data file"):
-        if os.path.exists(DATA_FILE):
-            df = pd.read_csv(DATA_FILE)
-            st.dataframe(df.tail(10))
-        else:
-            st.info("No saved data yet.")
+    lang = st.selectbox("🗣️ Voice language", ["en", "hi"], index=0)
 
 if not location:
     st.info("Enter a Location in the sidebar to get advisory, forecast, and charts.")
@@ -160,7 +157,7 @@ if not location:
 current = get_current_weather(location)
 forecast = get_forecast(location, days=4)
 
-col1, col2 = st.columns([2,1])
+col1, col2 = st.columns([2, 1])
 
 with col1:
     st.header(f"📍 Advisory for {farmer_name or 'Farmer'} in {location}")
@@ -175,73 +172,29 @@ with col1:
 
     if forecast:
         st.subheader("Forecast (next days)")
-        df_fore = pd.DataFrame(forecast)
-        st.table(df_fore)
-
-        dates = [d['date'] for d in forecast]
-        temps = [d['avg_temp'] for d in forecast]
-        hums = [d['avg_humidity'] for d in forecast]
-
-        fig, ax = plt.subplots(figsize=(6,3))
-        ax.plot(dates, temps, marker='o')
-        ax.set_title("Avg Temperature (next days)")
-        ax.set_ylabel("°C")
-        ax.grid(True)
-        st.pyplot(fig)
-
-        fig2, ax2 = plt.subplots(figsize=(6,3))
-        ax2.plot(dates, hums, marker='o')
-        ax2.set_title("Avg Humidity (next days)")
-        ax2.set_ylabel("%")
-        ax2.grid(True)
-        st.pyplot(fig2)
+        st.table(pd.DataFrame(forecast))
     else:
         st.info("Forecast not available.")
 
     st.subheader("✅ Personalized Crop Advisory")
-    for tip in crop_advisory(soil_type, current or (forecast[0] if forecast else None), crop_stage):
+    advice_text = "\n".join(crop_advisory(soil_type, current or (forecast[0] if forecast else None), crop_stage))
+    for tip in advice_text.split("\n"):
         st.write("- " + tip)
 
     st.subheader("📈 Yield Estimate")
     estimate = simple_yield_estimate(soil_type, forecast, crop_stage)
     st.info(estimate["text"])
 
-    st.subheader("⚠️ Pest & Disease Alerts")
-    alerts = pest_disease_alerts(forecast)
-    if alerts:
-        for a in alerts:
-            st.warning(a)
-    else:
-        st.write("No immediate high-risk alerts predicted.")
-
-    st.subheader("📢 Relevant Govt. Schemes")
-    schemes = [
-        {"name":"PM-KISAN", "desc":"Income support scheme for farmers."},
-        {"name":"Soil Health Card Scheme", "desc":"Provides soil nutrient recommendations."},
-        {"name":"PMFBY", "desc":"Crop insurance (Pradhan Mantri Fasal Bima Yojana)."},
-        {"name":"e-NAM", "desc":"National Agriculture Market platform."}
-    ]
-    for s in schemes:
-        st.write(f"**{s['name']}** — {s['desc']}")
+    st.subheader("🔊 Voice Advisory")
+    if st.button("Play Advisory"):
+        try:
+            mp3_bytes = text_to_speech(advice_text, lang=lang)
+            st.audio(mp3_bytes, format="audio/mp3")
+        except Exception as e:
+            st.error("Voice output failed: " + str(e))
 
 with col2:
-    st.header("Actions & Save Data")
-    record = {
-        "timestamp": datetime.now().isoformat(timespec='seconds'),
-        "farmer": farmer_name,
-        "location": location,
-        "soil": soil_type,
-        "stage": crop_stage,
-        "current_temp": current['temperature'] if current else None,
-        "current_humidity": current['humidity'] if current else None,
-        "forecast": json.dumps(forecast) if forecast else None,
-        "advisory": "; ".join(crop_advisory(soil_type, current or (forecast[0] if forecast else None), crop_stage))
-    }
-
-    if save_local and st.button("Save advisory to CSV"):
-        save_entry(record)
-        st.success("Saved locally to " + DATA_FILE)
-
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "rb") as f:
-            st.download_button("📥 Download saved CSV", f, file_name=DATA_FILE)
+    st.header("📊 Mandi Prices (Sample)")
+    state = st.selectbox("State", ["Karnataka", "Maharashtra", "Punjab"], index=0)
+    df_mandi = get_dummy_mandi_prices(state=state)
+    st.table(df_mandi)
