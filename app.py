@@ -2,129 +2,111 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
-from gtts import gTTS
-import io
+import os
 
-# ----------------- CONFIG -----------------
+# ------------------- CONFIG -------------------
 st.set_page_config(page_title="SmartCrop Advisory", layout="wide")
+DATA_FILE = "smartcrop_data.csv"
 
-# ----------------- WEATHER -----------------
-def get_weather(city, api_key):
+# ------------------- Crop & Fertilizer Knowledge Base -------------------
+CROP_RECOMMENDATIONS = {
+    "Alluvial": ["Wheat", "Sugarcane", "Rice", "Pulses"],
+    "Black": ["Cotton", "Soybean", "Millets"],
+    "Red": ["Groundnut", "Millets", "Pulses"],
+    "Laterite": ["Cashew", "Coconut", "Pineapple"],
+    "Sandy": ["Pulses", "Groundnut", "Watermelon"],
+    "Clay": ["Rice", "Sugarcane", "Jute"]
+}
+
+FERTILIZER_RECOMMENDATIONS = {
+    "Wheat": ["Urea", "DAP", "MOP"],
+    "Rice": ["Urea", "Superphosphate", "Potash"],
+    "Sugarcane": ["Nitrogen-rich fertilizers", "Phosphorus fertilizers"],
+    "Cotton": ["NPK (Nitrogen, Phosphorus, Potassium)"],
+    "Soybean": ["Potash", "Phosphate fertilizers"],
+    "Groundnut": ["Gypsum", "Phosphate fertilizers"],
+    "Pulses": ["Biofertilizers", "DAP"],
+    "Millets": ["Farmyard manure", "Urea"],
+    "Cashew": ["Organic compost", "Potash fertilizers"],
+    "Coconut": ["NPK fertilizers", "Farmyard manure"],
+    "Pineapple": ["Nitrogen fertilizers", "Potash"],
+    "Watermelon": ["Urea", "Superphosphate"],
+    "Jute": ["Urea", "Potash", "Zinc sulphate"]
+}
+
+# ------------------- HELPER FUNCTIONS -------------------
+def get_weather(city):
+    api_key = st.secrets["OPENWEATHER_API_KEY"] if "OPENWEATHER_API_KEY" in st.secrets else None
+    if not api_key:
+        return None, "⚠️ No API key found"
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
     try:
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
-        response = requests.get(url, timeout=10).json()
-        if response.get("cod") != 200:
-            return None
-        return {
-            "temp": response["main"]["temp"],
-            "humidity": response["main"]["humidity"],
-            "condition": response["weather"][0]["description"],
-        }
-    except:
-        return None
-
-# ----------------- YIELD ESTIMATION -----------------
-def simple_yield_estimate(soil, stage):
-    if soil == "Alluvial":
-        return {"text": "High fertility soil, expect ~2.5 - 3 tons/acre"}
-    elif soil == "Black":
-        return {"text": "Good for cotton & soybean, yields ~2 tons/acre"}
-    else:
-        return {"text": "Average yield ~1.5 tons/acre"}
-
-# ----------------- VOICE ADVISORY -----------------
-def text_to_speech(text, lang="en"):
-    tts = gTTS(text=text, lang=lang)
-    mp3_fp = io.BytesIO()
-    tts.write_to_fp(mp3_fp)
-    mp3_fp.seek(0)
-    return mp3_fp.read()
-
-# ----------------- MANDI PRICES (Agmarknet API) -----------------
-def get_mandi_prices(state, api_key):
-    try:
-        url = "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
-        params = {
-            "api-key": api_key,
-            "format": "json",
-            "filters[state]": state,
-            "limit": 50
-        }
-        response = requests.get(url, params=params, timeout=10).json()
-        if "records" in response:
-            df = pd.DataFrame(response["records"])
-            return df[["state", "district", "market", "commodity", "variety", "min_price", "max_price", "modal_price"]]
-        return pd.DataFrame()
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "temp": data["main"]["temp"],
+                "humidity": data["main"]["humidity"],
+                "condition": data["weather"][0]["description"]
+            }, None
+        else:
+            return None, f"⚠️ Error fetching weather: {response.status_code}"
     except Exception as e:
-        return pd.DataFrame({"error": [str(e)]})
+        return None, f"⚠️ Exception: {str(e)}"
 
-# ----------------- UI -----------------
-st.title("🌾 SmartCrop Advisory for Farmers")
+def simple_yield_estimate(soil, stage):
+    if soil in ["Alluvial", "Black", "Clay"]:
+        return {"text": "High fertility soil, expect ~2.5 - 3 tons/acre"}
+    elif soil in ["Red", "Laterite"]:
+        return {"text": "Medium fertility soil, expect ~1.5 - 2 tons/acre"}
+    else:
+        return {"text": "Low fertility soil, expect ~1 - 1.5 tons/acre"}
 
-# Farmer inputs
-col1, col2 = st.columns(2)
+def get_dummy_mandi_prices(state):
+    data = {
+        "Karnataka": [("Wheat", 2200, "Bengaluru APMC"), ("Rice", 1800, "Mandya APMC")],
+        "Maharashtra": [("Cotton", 6000, "Nagpur APMC"), ("Soybean", 4500, "Pune APMC")],
+        "Punjab": [("Wheat", 2000, "Ludhiana APMC"), ("Rice", 1900, "Amritsar APMC")]
+    }
+    return pd.DataFrame(data.get(state, []), columns=["Commodity", "Price (₹/quintal)", "Market"])
 
-with col1:
-    farmer_name = st.text_input("👨‍🌾 Farmer Name", "")
-    location = st.text_input("📍 Location (City/Village)", "Bangalore")
-    soil_type = st.selectbox("🧱 Soil Type", ["Alluvial", "Black", "Red", "Laterite"])
-    crop_stage = st.selectbox("🌱 Crop Stage", ["Sowing", "Vegetative", "Flowering", "Harvest"])
-    voice_lang = st.selectbox("🗣️ Voice language", ["Kannada", "Hindi", "Tamil", "English"])
+# ------------------- SIDEBAR INPUTS -------------------
+st.sidebar.header("👨‍🌾 Farmer Details")
+farmer_name = st.sidebar.text_input("👤 Farmer Name", value="")
+location = st.sidebar.text_input("📍 Location (City/Village)", value="")
+soil_type = st.sidebar.selectbox("🌱 Soil Type", list(CROP_RECOMMENDATIONS.keys()))
+crop_stage = st.sidebar.selectbox("🌾 Crop Stage", ["Sowing", "Vegetative", "Flowering", "Harvesting"])
+state = st.sidebar.selectbox("🛒 State for Mandi Prices", ["Karnataka", "Maharashtra", "Punjab"])
 
-with col2:
-    st.subheader("📊 Mandi Prices (Live)")
-    states = [
-        "Andhra Pradesh","Arunachal Pradesh","Assam","Bihar","Chhattisgarh","Delhi","Goa",
-        "Gujarat","Haryana","Himachal Pradesh","Jharkhand","Karnataka","Kerala",
-        "Madhya Pradesh","Maharashtra","Manipur","Meghalaya","Mizoram","Nagaland",
-        "Odisha","Punjab","Rajasthan","Sikkim","Tamil Nadu","Telangana","Tripura",
-        "Uttar Pradesh","Uttarakhand","West Bengal"
-    ]
-    state = st.selectbox("Select State", states)
+# ------------------- MAIN APP -------------------
+st.title("🌾 SmartCrop Advisory")
+st.subheader("For Small & Marginal Farmers")
 
-# ----------------- WEATHER DISPLAY -----------------
-st.subheader(f"📌 Advisory for {farmer_name or 'Farmer'} in {location}")
-
-OWM_KEY = st.secrets.get("OWM_API_KEY", None)
-if not OWM_KEY:
-    st.error("⚠️ Please add your OpenWeatherMap API key in Streamlit Secrets.")
-else:
-    weather = get_weather(location, OWM_KEY)
+# Weather
+if location:
+    weather, error = get_weather(location)
     if weather:
         st.success(f"🌡 Temp: {weather['temp']}°C | 💧 Humidity: {weather['humidity']}% | ☁ {weather['condition']}")
     else:
-        st.warning("⚠️ Weather data not available (check city spelling or API key).")
+        st.warning(error)
 
-# ----------------- ADVISORY -----------------
-st.subheader("✅ Personalized Crop Advisory")
-advice_text = (
-    f"For {soil_type} soil in {crop_stage} stage: \n"
-    "- Ensure proper irrigation. \n"
-    "- Apply fertilizers based on soil health card. \n"
-    "- Monitor for pests and diseases."
-)
-st.write(advice_text)
+# Crop Advisory
+st.subheader(f"📌 Advisory for {farmer_name or 'Farmer'} in {location or 'your area'}")
 
-# Yield estimate
-st.subheader("📈 Yield Estimate")
+if soil_type in CROP_RECOMMENDATIONS:
+    crops = CROP_RECOMMENDATIONS[soil_type]
+    st.write(f"**Best crops for {soil_type} soil:** {', '.join(crops)}")
+
+    for crop in crops:
+        if crop in FERTILIZER_RECOMMENDATIONS:
+            st.write(f"- 🌱 **{crop}** → Recommended fertilizers: {', '.join(FERTILIZER_RECOMMENDATIONS[crop])}")
+
+# Yield Estimate
+st.subheader("📊 Yield Estimate")
 estimate = simple_yield_estimate(soil_type, crop_stage)
 st.info(estimate["text"])
 
-# Voice output
-if st.button("🔊 Play Advisory"):
-    try:
-        mp3_bytes = text_to_speech(advice_text, lang=voice_lang)
-        st.audio(mp3_bytes, format="audio/mp3")
-    except Exception as e:
-        st.error("Voice output failed: " + str(e))
-
-# ----------------- SHOW MANDI DATA -----------------
-MANDI_KEY = st.secrets.get("MANDI_API_KEY", None)
-if not MANDI_KEY:
-    st.error("⚠️ Please add your Agmarknet API key in Streamlit Secrets.")
-else:
-    df_mandi = get_mandi_prices(state, MANDI_KEY)
-    if not df_mandi.empty:
-        st.dataframe(df_mandi.head(20))
-    else:
-        st.warning("⚠️ No mandi data available for this state right now.")
+# Mandi Prices
+st.subheader("📉 Mandi Prices (Sample)")
+df_mandi = get_dummy_mandi_prices(state)
+st.table(df_mandi)
