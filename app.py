@@ -69,7 +69,7 @@ with col1:
     location = st.text_input("📍 Location (City/Village)", "Bangalore")
     soil_type = st.selectbox("🧱 Soil Type", ["Alluvial", "Black", "Red", "Laterite"])
     crop_stage = st.selectbox("🌱 Crop Stage", ["Sowing", "Vegetative", "Flowering", "Harvest"])
-    voice_lang = st.selectbox("🗣️ Voice language", ["en", "hi", "ta", "kn"])
+    voice_lang = st.selectbox("🗣️ Voice language", ["Kannada", "Hindi", "Tamil", "English"])
 
 with col2:
     st.subheader("📊 Mandi Prices (Live)")
